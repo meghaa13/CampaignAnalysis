@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>⭐ Google Ads Audit Report Generator</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, sans-serif;
+      background: linear-gradient(135deg, #c4d9ff, #e6f0ff);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+
+    .container {
+      background: white;
+      padding: 40px;
+      border-radius: 16px;
+      box-shadow: 0 6px 25px rgba(0, 0, 0, 0.1);
+      text-align: center;
+      width: 500px;
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 1.7rem;
+      color: #111;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      margin: 20px 0;
+      border: 2px solid #ccc;
+      border-radius: 10px;
+      background: #eaf1ff;
+    }
+
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    button:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+
+    .fun-fact {
+      margin-top: 30px;
+      background: #e3f2fd;
+      color: #0d47a1;
+      padding: 15px;
+      font-weight: 500;
+      border-radius: 10px;
+      font-size: 15px;
+      border-left: 6px solid #007bff;
+      display: flex;
+      align-items: center;
+    }
+
+    .fun-fact span {
+      margin-right: 10px;
+      font-size: 20px;
+    }
+
+    .auth-section {
+      margin-top: 20px;
+    }
+
+    .logout {
+      margin-top: 20px;
+      display: block;
+      color: #007bff;
+      font-size: 14px;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>⭐ Google Ads Audit Report Generator</h2>
+
+    {% if auth_success %}
+      <div style="background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; padding: 10px; margin-bottom: 20px; border-radius: 5px;">
+        ✅ Authentication successful! You may now enter your Customer ID to generate a report.
+      </div>
+    {% endif %}
+      {% if authenticated_users %}
+      <h3>Authenticated Accounts:</h3>
+      <ul>
+          {% for uid, path in authenticated_users.items() %}
+              <li>
+                  {{ uid }} {% if uid == active_user %}(active){% endif %}
+                  <a href="{{ url_for('switch_user', user_id=uid) }}">Switch</a>
+              </li>
+          {% endfor %}
+      </ul>
+    {% endif %}
+
+
+    {% if not authenticated %}
+      <div class="auth-section">
+        <p>Please authenticate with your Google Ads account to begin:</p>
+        <a href="{{ url_for('auth') }}">
+          <button>🔐 Authenticate with Google Ads</button>
+        </a>
+      </div>
+    {% else %}
+      <form method="POST" onsubmit="showProcessing()">
+        <input type="text" name="customer_id" placeholder="Enter Customer ID" required />
+        <button id="generate-btn" type="submit">Generate Report</button>
+      </form>
+      <a class="logout" href="{{ url_for('logout') }}">Logout</a>
+    {% endif %}
+
+    <div class="fun-fact" id="fun-fact">
+      <span>💡</span><div id="fact-text">Just a moment... amazing insights incoming!</div>
+    </div>
+  </div>
+
+  <script>
+    const funFacts = [
+      "📈 PPC visitors are 50% more likely to buy than organic.",
+      "🎯 Negative keywords can improve ROAS by 30%+.",
+      "💰 Businesses earn $2 for every $1 spent on Google Ads.",
+      "🔥 46% of clicks go to the top 3 paid ads.",
+      "🧠 Smart Bidding adjusts bids 3B+ times per day.",
+      "📊 Responsive Search Ads adapt live to users.",
+      "🧪 A/B testing ad copy boosts CTR by up to 40%.",
+      "🌐 Google Ads reaches over 90% of internet users.",
+      "📍 Location targeting improves relevance dramatically.",
+      "🎥 YouTube Ads have 95% viewable impressions.",
+      "🔍 Search ads can lift brand awareness by 80%.",
+      "📱 70% of mobile searchers call from ads.",
+      "🎨 Ad extensions increase CTR by 15-30%.",
+      "🧩 Exact match isn’t always exact — it’s ‘close variant’.",
+      "📈 Quality Score affects ad rank & CPC massively.",
+      "📣 Display ads are shown on 2M+ websites & apps.",
+      "🔁 Retargeting boosts conversion by up to 147%.",
+      "🕐 Dayparting can optimize ads for best times.",
+      "👨‍💻 65% of SMBs use PPC to grow fast.",
+      "📥 Lead form extensions boost signups by 30%."
+    ];
+
+    let factIndex = 0;
+    const factText = document.getElementById("fact-text");
+
+    function rotateFacts() {
+      factIndex = (factIndex + 1) % funFacts.length;
+      factText.textContent = funFacts[factIndex];
+    }
+
+    setInterval(rotateFacts, 5000);
+
+    function showProcessing() {
+      const button = document.getElementById("generate-btn");
+      let step = 0;
+      const steps = [
+        "Processing report...",
+        "Crunching campaign data...",
+        "Summarizing insights...",
+        "Preparing heatmaps...",
+        "Almost there... 📊"
+      ];
+
+      button.disabled = true;
+      button.textContent = steps[0];
+
+      const interval = setInterval(() => {
+        step++;
+        if (step >= steps.length) {
+          clearInterval(interval);
+          button.textContent = "Opening Report...";
+        } else {
+          button.textContent = steps[step];
+        }
+      }, 4000);
+    }
+  </script>
+</body>
+</html>

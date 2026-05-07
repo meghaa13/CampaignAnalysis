@@ -1,0 +1,25 @@
+# Core Web Framework
+Flask
+Flask-Session
+gunicorn
+python-dotenv
+Werkzeug
+
+# Data Processing & Visualization
+pandas
+matplotlib
+seaborn
+numpy
+
+# Google Services & APIs
+google-ads
+google-auth
+google-auth-oauthlib
+google-cloud-storage
+google-generativeai
+
+# Utilities & Parsing
+python-docx
+beautifulsoup4
+requests
+PyYAML

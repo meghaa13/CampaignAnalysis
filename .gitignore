@@ -1,0 +1,45 @@
+# Secrets & credentials (NEVER push these)
+.env
+token1.json
+campaign-signed-report.json
+report-signer.json
+user_tokens/
+base_google-ads.yaml
+client-secrets-web.json
+
+# Browser profiles & caches
+ChromeDebugProfile/
+ms-playwright/
+bundled_chromium/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated files
+generated_reports/
+report_images/
+flask_session_backup/
+
+# Dev / scratch files
+combined_codebase.md
+mcp.md
+mcp_server.py
+scratch/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# NOTE: geotargets.csv is intentionally NOT ignored — it's needed for geo resolution

@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: campaign-audit
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: GEMINI_MODEL
+        value: "gemini-2.5-flash-lite"
+      - key: GEO_CSV_PATH
+        value: "geotargets.csv"
+      - key: CLIENT_SECRETS_PATH
+        value: "/tmp/client-secrets-web.json"
+      - key: OAUTHLIB_INSECURE_TRANSPORT
+        value: "0"
+      # --- Set these manually in Render dashboard ---
+      - key: REDIRECT_URI
+        sync: false
+      - key: FLASK_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_ADS_DEVELOPER_TOKEN
+        sync: false
+      - key: GOOGLE_ADS_CLIENT_ID
+        sync: false
+      - key: GOOGLE_ADS_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_ADS_REFRESH_TOKEN
+        sync: false
+      - key: CLIENT_SECRETS_JSON
+        sync: false
