@@ -1,13 +1,4 @@
-# gemini_competitor.py
-# ─────────────────────────────────────────────────────────────────────────────
-# TRUE Competitor Insights for Property Advertisers
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 1 — Find top property competitors bidding on YOUR keywords (via Serper)
-# STEP 2 — Scrape each competitor's landing page (headline, USP, CTA, offer)
-# STEP 3 — Gemini compares them against YOUR account data & LPs
-# STEP 4 — Returns structured intelligence: competitor name, LP analysis,
-#           messaging gaps, and recommendations
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 import os
 import re
@@ -281,16 +272,60 @@ def _summarise_keywords(df: pd.DataFrame) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Default property competitor fallback (used when no SERP key is set)
+# Default competitor fallback  (used ONLY when no SERP key + no env var set)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PROPERTY_FALLBACK_DOMAINS = [
-    "magicbricks.com",
-    "housing.com",
-    "99acres.com",
-    "nobroker.in",
-    "commonfloor.com",
-]
+def _infer_fallback_domains(top_keywords: list, site_url: str) -> list:
+    """
+    Infer industry-relevant fallback competitor domains from client keywords / site URL.
+    Avoids hardcoding any sector — works for ANY client.
+    Priority:
+      1. COMPETITOR_DOMAINS env var (comma-separated) — set this in Render dashboard
+      2. Derive from top keywords using broad industry signals
+      3. Absolute last resort: 3 generic digital marketing competitors
+    """
+    # ── Priority 1: explicit override ─────────────────────────────────────
+    env_override = os.environ.get("COMPETITOR_DOMAINS", "").strip()
+    if env_override:
+        domains = [d.strip() for d in env_override.split(",") if d.strip()]
+        if domains:
+            print(f"[COMPETITOR] Using COMPETITOR_DOMAINS env var: {domains}")
+            return domains
+
+    # ── Priority 2: keyword-signal based guessing ─────────────────────────
+    kw_blob = " ".join(top_keywords).lower() if top_keywords else ""
+    site_low = (site_url or "").lower()
+
+    # Map keyword signals → typical competitor domains for that niche
+    NICHE_SIGNALS = [
+        (["video brochure", "video card", "lcd video", "video mailer", "video box"],
+         ["liquidimaging.com", "igotopromo.com", "broadcastprintmedia.com",
+          "videobrochures.com", "videoplus.com"]),
+        (["real estate", "property", "flat", "apartment", "villa", "buy home"],
+         ["zillow.com", "realtor.com", "trulia.com", "redfin.com", "homes.com"]),
+        (["hotel", "resort", "hospitality", "booking", "stay"],
+         ["booking.com", "hotels.com", "expedia.com", "agoda.com", "airbnb.com"]),
+        (["software", "saas", "crm", "erp", "cloud platform"],
+         ["salesforce.com", "hubspot.com", "zoho.com", "freshworks.com", "pipedrive.com"]),
+        (["ecommerce", "online store", "shopify", "woocommerce", "product"],
+         ["shopify.com", "bigcommerce.com", "wix.com", "squarespace.com", "weebly.com"]),
+        (["education", "course", "online learning", "certification", "training"],
+         ["udemy.com", "coursera.org", "edx.org", "skillshare.com", "pluralsight.com"]),
+        (["insurance", "policy", "premium", "coverage", "health plan"],
+         ["policybazaar.com", "coverfox.com", "acko.com", "digit.in", "turtlemint.com"]),
+        (["finance", "loan", "credit", "invest", "mutual fund"],
+         ["groww.in", "zerodha.com", "angelone.in", "paytmmoney.com", "icicidirect.com"]),
+    ]
+
+    for signals, fallbacks in NICHE_SIGNALS:
+        if any(sig in kw_blob or sig in site_low for sig in signals):
+            print(f"[COMPETITOR] Keyword-matched niche → using: {fallbacks[:3]}")
+            return fallbacks
+
+    # ── Priority 3: truly generic last resort ─────────────────────────────
+    print("[COMPETITOR] No niche match — using generic digital competitors as placeholder.")
+    print("[COMPETITOR] ⚠️  Set COMPETITOR_DOMAINS env var in Render dashboard for accurate results!")
+    return ["semrush.com", "ahrefs.com", "similarweb.com"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -349,10 +384,10 @@ def generate_competitor_insights(
             if d and d not in competitor_domains:
                 competitor_domains.append(d)
 
-    # Fall back to property sector defaults if nothing was found
+    # Fall back to smart keyword-derived defaults if nothing was found
     if not competitor_domains:
-        print("[COMPETITOR] No SERP data — using property sector fallback domains.")
-        competitor_domains = _PROPERTY_FALLBACK_DOMAINS.copy()
+        print("[COMPETITOR] No SERP data — deriving competitors from keywords/site.")
+        competitor_domains = _infer_fallback_domains(top_keywords, site_url)
 
     # Remove our own domain
     our_domain = _clean_domain(site_url) if site_url else ""

@@ -164,8 +164,8 @@ def generate_signed_url(blob_name, expires_seconds=3600, disposition_filename: s
 # GCS sync disabled for local mode
 # sync_user_tokens_from_gcs()
 
-GEOTARGETS_LOCAL_PATH = os.environ.get("GEOTARGETS_LOCAL_PATH", "/tmp/geotargets.csv")
-GEOTARGETS_GCS_PATH = os.environ.get("GEOTARGETS_GCS_PATH", "config/geotargets.csv")
+GEOTARGETS_LOCAL_PATH = os.environ.get("GEOTARGETS_LOCAL_PATH", "geotargets.csv")
+GEOTARGETS_GCS_PATH = os.environ.get("GEOTARGETS_GCS_PATH", "geotargets.csv")
 REPORT_IMAGES_GCS_PREFIX = os.environ.get("REPORT_IMAGES_GCS_PREFIX", "default_heatmaps/")
 
 # ensure_geotargets_csv()
@@ -268,8 +268,7 @@ def find_accessible_manager(client, root_manager_id: str, target_cid: str) -> st
         SELECT
           customer_client.id,
           customer_client.descriptive_name,
-          customer_client.manager,
-          customer_client.customer_manager
+          customer_client.manager
         FROM customer_client
         WHERE customer_client.status = 'ENABLED'
     """

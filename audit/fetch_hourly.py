@@ -95,7 +95,7 @@ def fetch_hourly_performance_data(
 
     # [OK] Upload immediately to GCS under this customer_id
     try:
-        prefix, uploaded = upload_report_images_to_gcs(customer_id)
+        prefix = upload_report_images_to_gcs(customer_id)
         if prefix:
             from flask import session
             session["latest_report_images_prefix"] = prefix

@@ -1,37 +1,22 @@
-# config.py (patched for Cloud Run readiness)
+# config.py (FIXED: Groq model + geo CSV loading)
 import os
 from pathlib import Path
 import sys
-import traceback
 import shutil
 import yaml
 
 # optional heavy imports:
 try:
-    print("DEBUG: config.py: importing pandas...")
     import pandas as pd
-    print("DEBUG: config.py: pandas imported.")
 except Exception:
     pd = None
-
-# google-ads imports are done on demand inside LazyGoogleAdsClient
-
-# ── Generative AI — Multi-LLM fallback chain ─────────────────────────────────
-# Priority: Gemini (google.genai) → Groq (llama3) → OpenRouter (free models)
-# Every provider wraps to the same .generate_content(prompt) interface.
-# Config via env vars:
-#   GEMINI_API_KEY      → primary (google.genai SDK)
-#   GROQ_API_KEY        → fallback 1 (free tier, very fast)
-#   OPENROUTER_API_KEY  → fallback 2 (free tier, many models)
-# If none set → DummyModel (rule-based output, no AI)
-# ─────────────────────────────────────────────────────────────────────────────
 
 try:
     from google import genai as _genai_sdk
 except Exception:
     _genai_sdk = None
 
-import requests as _requests  # Groq uses pure REST — no groq package needed
+import requests as _requests
 
 class DummyResponse:
     def __init__(self, text=""):
@@ -43,7 +28,6 @@ class DummyModel:
             '[{"Characteristic":"AI Disabled","Insight":"No LLM API key configured",'
             '"Recommendation":"Set GEMINI_API_KEY or GROQ_API_KEY or OPENROUTER_API_KEY"}]'
         )
-
 
 # ── Provider 1: Gemini ────────────────────────────────────────────────────────
 class _GeminiModel:
@@ -57,8 +41,7 @@ class _GeminiModel:
             model=self._model_name,
             contents=prompt,
         )
-        return response   # response.text is the string
-
+        return response
 
 # ── Provider 2: Groq (free tier) ─────────────────────────────────────────────
 class _GroqModel:
@@ -67,26 +50,43 @@ class _GroqModel:
         self._api_key = api_key
         self._model_name = model_name
 
-    def generate_content(self, prompt, **kwargs):
-        resp = _requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-            json={"model": self._model_name, "messages": [{"role": "user", "content": prompt}],
-                  "max_tokens": 4096, "temperature": 0.3},
-            timeout=60,
-        )
-        if resp.status_code == 429:
-            raise RuntimeError(f"rate_limit: {resp.text[:100]}")
-        resp.raise_for_status()
-        return DummyResponse(resp.json()["choices"][0]["message"]["content"] or "")
+    # Groq context window: 128k tokens ≈ ~96k chars safe limit
+    _MAX_PROMPT_CHARS = 80_000
+    _RETRY_WAITS = (3, 6, 12)   # seconds to wait between rate-limit retries
 
+    def generate_content(self, prompt, **kwargs):
+        import time as _time
+        # Truncate oversized prompts — 400 errors often caused by token overflow
+        if isinstance(prompt, str) and len(prompt) > self._MAX_PROMPT_CHARS:
+            prompt = prompt[:self._MAX_PROMPT_CHARS] + "\n\n[PROMPT TRUNCATED FOR LENGTH]"
+
+        last_err = None
+        for wait in (0, *self._RETRY_WAITS):  # first attempt is immediate
+            if wait:
+                print(f"[LLM] Groq rate-limit — waiting {wait}s before retry...")
+                _time.sleep(wait)
+            resp = _requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
+                json={"model": self._model_name, "messages": [{"role": "user", "content": prompt}],
+                      "max_tokens": 2048, "temperature": 0.3},
+                timeout=60,
+            )
+            if resp.status_code == 429:
+                last_err = f"rate_limit: {resp.text[:200]}"
+                continue   # retry after wait
+            if resp.status_code == 400:
+                raise RuntimeError(f"groq_bad_request: {resp.text[:400]}")
+            resp.raise_for_status()
+            return DummyResponse(resp.json()["choices"][0]["message"]["content"] or "")
+
+        raise RuntimeError(last_err or "Groq rate-limit exceeded after retries")
 
 # ── Provider 3: OpenRouter (free models) ─────────────────────────────────────
 class _OpenRouterModel:
     """
     OpenRouter gives access to free models (mistral-7b, llama-3 etc).
     Free tier: generous daily limits. Sign up at https://openrouter.ai
-    Set OPENROUTER_MODEL env var to change model (default: mistralai/mistral-7b-instruct:free)
     """
     def __init__(self, api_key, model_name):
         self._api_key = api_key
@@ -111,7 +111,6 @@ class _OpenRouterModel:
         text = resp.json()["choices"][0]["message"]["content"] or ""
         return DummyResponse(text)
 
-
 # ── Fallback chain wrapper ────────────────────────────────────────────────────
 class _FallbackModel:
     """
@@ -124,7 +123,6 @@ class _FallbackModel:
     ]
 
     def __init__(self, providers: list):
-        # providers: list of (name, model_obj)
         self._providers = providers
         self._current = 0
 
@@ -133,26 +131,25 @@ class _FallbackModel:
         return any(sig.lower() in msg for sig in self.QUOTA_SIGNALS)
 
     def generate_content(self, prompt, **kwargs):
-        for i in range(self._current, len(self._providers)):
+        # Always attempt from the beginning of the chain — never permanently skip a provider
+        for i in range(len(self._providers)):
             name, provider = self._providers[i]
             try:
                 result = provider.generate_content(prompt, **kwargs)
                 if i != self._current:
-                    print(f"[LLM] Switched to provider: {name}")
+                    print(f"[LLM] Active provider: {name}")
                     self._current = i
                 return result
             except Exception as e:
+                err_msg = str(e)
                 if self._is_quota_error(e):
-                    print(f"[LLM] {name} quota/rate-limit hit: {e}. Trying next provider...")
-                    continue
+                    print(f"[LLM] {name} quota/rate-limit hit: {err_msg[:200]}. Trying next provider...")
                 else:
-                    # Non-quota error (bad prompt, parse error etc) — still try next
-                    print(f"[LLM] {name} error: {e}. Trying next provider...")
-                    continue
+                    print(f"[LLM] {name} error: {err_msg[:300]}. Trying next provider...")
+                continue
 
         print("[LLM] All providers exhausted. Returning dummy response.")
         return DummyModel().generate_content(prompt)
-
 
 # ── Build the model ───────────────────────────────────────────────────────────
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY")
@@ -171,10 +168,10 @@ if GEMINI_API_KEY and _genai_sdk is not None:
     except Exception as e:
         print(f"[LLM] Gemini init failed: {e}")
 
-# Provider 2 — Groq via REST (just needs GROQ_API_KEY, no package)
+# Provider 2 — Groq via REST ✅ FIXED MODEL NAME
 if GROQ_API_KEY:
     try:
-        _groq_model = os.environ.get("GROQ_MODEL", "llama3-8b-8192")
+        _groq_model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")   # 15,000+ TPM vs 70b's 1,200 TPM
         _providers.append(("Groq", _GroqModel(GROQ_API_KEY, _groq_model)))
         print(f"[LLM] ✅ Groq ready ({_groq_model})")
     except Exception as e:
@@ -183,7 +180,7 @@ if GROQ_API_KEY:
 # Provider 3 — OpenRouter (free models)
 if OPENROUTER_API_KEY:
     try:
-        _or_model = os.environ.get("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
+        _or_model = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free")
         _providers.append(("OpenRouter", _OpenRouterModel(OPENROUTER_API_KEY, _or_model)))
         print(f"[LLM] OpenRouter ready ({_or_model})")
     except Exception as e:
@@ -205,9 +202,8 @@ base_config = {
     "refresh_token": os.environ.get("GOOGLE_ADS_REFRESH_TOKEN"),
     "use_proto_plus": True
 }
-if any(base_config.values()):  # write only if something is provided
+if any(base_config.values()):
     try:
-        # Avoid unnecessary writes if content hasn't changed
         existing_data = {}
         if os.path.exists(base_yaml_path):
             with open(base_yaml_path, "r", encoding="utf-8") as f:
@@ -255,19 +251,15 @@ class LazyGoogleAdsClient:
             raise RuntimeError(
                 f"Google Ads client is not available. Failed to load '{self._config_path}'. "
                 "This usually means your OAuth2 credentials (refresh_token) are missing or invalid. "
-                "Use the app's auth flow to create per-user YAMLs in user_tokens/, or call "
-                "safe_load_google_ads_client(auth_path) / load_google_ads_client(auth_path) manually. "
                 f"Underlying error: {repr(self._load_exc)}"
             )
         return getattr(self._client, name)
 
 client = LazyGoogleAdsClient(config_path="base_google-ads.yaml")
-
 customer_id = None
 
-# === Chrome Debugging Config (non-fatal on import) ===
+# === Chrome Config (non-fatal) ===
 def get_chrome_exec():
-    # Try environment override first
     env_path = os.environ.get("CHROME_PATH")
     if env_path:
         return env_path
@@ -283,7 +275,6 @@ def get_chrome_exec():
             if bundled_path.exists():
                 return str(bundled_path.resolve())
 
-            # Linux/Cloud Run: try typical chromium paths
             linux_candidates = [
                 "/usr/bin/chromium-browser",
                 "/usr/bin/chromium",
@@ -294,27 +285,21 @@ def get_chrome_exec():
                 if Path(p).exists():
                     return p
 
-            # try PATH
             found = shutil.which("chrome") or shutil.which("chromium") or shutil.which("google-chrome")
             if found:
                 return found
     except Exception:
         pass
-    # Not fatal on import — only raise if caller needs it.
     return None
-
-# DO NOT call get_chrome_exec() at import if you don't need Chrome. Let callers decide.
 
 CHROME_PATH = os.environ.get("CHROME_PATH") or None
 
-# Local dev: store profile inside project dir
-# Frozen exe: store profile in user home
 if getattr(sys, "frozen", False):
     USER_DATA_DIR = str(Path.home() / ".google_ads_userdata")
 else:
     USER_DATA_DIR = os.path.abspath("ChromeDebugProfile")
 
-DEBUGGING_PORT = 9222  # keep as int (not string)
+DEBUGGING_PORT = 9222
 
 # === Environment Constants ===
 LANGUAGE = "English"
@@ -331,47 +316,67 @@ BID_STRATEGY_MAP = {
     13: "MANUAL_CPV", 14: "TARGET_CPM", 15: "TARGET_IMPRESSION_SHARE", 16: "COMMISSION",
 }
 
-# === Geo Lookup ===
-print("DEBUG: config.py: starting geo lookup init...")
+# ✅ FIXED: Geo Lookup with Multiple Fallback Paths
+print("[GEO] Starting geo CSV load...")
 GEO_LOOKUP_DF = None
-GEO_CSV_PATH = os.environ.get("GEO_CSV_PATH", "geotargets-2025-07-15.csv")
-print(f"DEBUG: config.py: GEO_CSV_PATH is {GEO_CSV_PATH}")
-try:
-    if GEO_CSV_PATH.startswith("gs://"):
-        # download via storage client if available
-        from google.cloud import storage
-        import io
-        try:
-            # Short timeout to prevent hangs on Windows local dev
-            storage_client = storage.Client()
-            bucket_name, blob_path = GEO_CSV_PATH[5:].split("/", 1)
-            blob = storage_client.bucket(bucket_name).blob(blob_path)
-            data = blob.download_as_bytes(timeout=10)
-            if pd is not None:
-                GEO_LOOKUP_DF = pd.read_csv(io.BytesIO(data))
-        except Exception as e:
-            print(f"[WARN] config.py: GCS download for {GEO_CSV_PATH} failed or timed out: {e}")
-            # Try to see if it exists locally as well
-            local_fallback = GEO_CSV_PATH.split("/")[-1]
-            if os.path.exists(local_fallback) and pd is not None:
-                GEO_LOOKUP_DF = pd.read_csv(local_fallback)
-    else:
-        if pd is not None and os.path.exists(GEO_CSV_PATH):
-            GEO_LOOKUP_DF = pd.read_csv(GEO_CSV_PATH)
-except Exception as e:
-    print(f"[WARN] Could not load geotarget CSV at {GEO_CSV_PATH}: {e}")
-    GEO_LOOKUP_DF = None
+
+# Resolve paths relative to this config.py file AND the process CWD
+_THIS_DIR   = Path(__file__).resolve().parent          # audit/
+_APP_DIR    = _THIS_DIR.parent                         # project root
+
+_GEO_PATHS = [
+    os.environ.get("GEO_CSV_PATH"),
+    os.environ.get("GEOTARGETS_PATH"),
+    str(_APP_DIR / "geotargets.csv"),          # ← project-root relative (most reliable)
+    str(_THIS_DIR / "geotargets.csv"),         # ← next to config.py
+    "/tmp/geotargets.csv",
+    "/tmp/geotargets-2025-07-15.csv",
+    "geotargets-2025-07-15.csv",
+    "geotargets.csv",
+]
+
+for path in _GEO_PATHS:
+    if not path or not os.path.exists(path):
+        continue
+    try:
+        if pd is None:
+            break
+        
+        GEO_LOOKUP_DF = pd.read_csv(path, dtype=str)
+        
+        # ✅ FIXED: Flexible column detection
+        id_col = None
+        for col in GEO_LOOKUP_DF.columns:
+            col_lower = col.lower()
+            if "criteria" in col_lower or "criterion" in col_lower:
+                id_col = col
+                break
+        
+        if not id_col:
+            print(f"[GEO] CSV at {path} missing ID column, skipping...")
+            GEO_LOOKUP_DF = None
+            continue
+        
+        # Filter active + set index
+        if "Status" in GEO_LOOKUP_DF.columns:
+            GEO_LOOKUP_DF = GEO_LOOKUP_DF[GEO_LOOKUP_DF["Status"] == "Active"]
+        
+        GEO_LOOKUP_DF[id_col] = pd.to_numeric(GEO_LOOKUP_DF[id_col], errors='coerce')
+        GEO_LOOKUP_DF = GEO_LOOKUP_DF.dropna(subset=[id_col])
+        GEO_LOOKUP_DF[id_col] = GEO_LOOKUP_DF[id_col].astype(int)
+        GEO_LOOKUP_DF.set_index(id_col, inplace=True)
+        
+        print(f"[GEO] ✅ Loaded {len(GEO_LOOKUP_DF)} geotargets from {path}")
+        break
+        
+    except Exception as e:
+        print(f"[GEO] Failed to load {path}: {e}")
+        GEO_LOOKUP_DF = None
+        continue
 
 if GEO_LOOKUP_DF is None:
-    # keep a usable empty DataFrame (code that expects it should handle empty)
-    if pd is not None:
-        GEO_LOOKUP_DF = pd.DataFrame()
-else:
-    try:
-        GEO_LOOKUP_DF = GEO_LOOKUP_DF[GEO_LOOKUP_DF["Status"] == "Active"]
-        GEO_LOOKUP_DF.set_index("Criteria ID", inplace=True)
-    except Exception as e:
-        print(f"[WARN] Error post-processing GEO_LOOKUP_DF: {e}")
+    print("[GEO] No geo CSV found — will show GeoID fallbacks")
+    GEO_LOOKUP_DF = pd.DataFrame() if pd else None
 
 # === Ensure folders exist ===
 REPORT_IMAGES_DIR = os.environ.get("REPORT_IMAGES_DIR", "/tmp/report_images")

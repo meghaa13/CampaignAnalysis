@@ -16,7 +16,7 @@ google-ads
 google-auth
 google-auth-oauthlib
 google-cloud-storage
-google-generativeai
+google-genai
 
 # Utilities & Parsing
 python-docx

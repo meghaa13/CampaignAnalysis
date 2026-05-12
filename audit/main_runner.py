@@ -190,8 +190,9 @@ def generate_google_ads_report(customer_id, google_ads_client, date_range=None, 
     if data_range_note:
         print(f"[DATE] {data_range_note}")
 
-    # 4) Run Gemini / audits in parallel
-    with ThreadPoolExecutor(max_workers=7) as executor:
+    # 4) Run Gemini / audits — limit to 3 concurrent workers so we don't
+    #    blast the Groq/Gemini TPM (tokens-per-minute) limit all at once.
+    with ThreadPoolExecutor(max_workers=3) as executor:
         # Pass BOTH kw_df and df_campaign so risks/opps covers all dimensions
         f_risk_opps = executor.submit(gemini_summary_risks_opps, kw_df, df_campaign)
         f_insight_30 = executor.submit(gemini_summary, df_campaign, "Campaigns")
@@ -199,7 +200,7 @@ def generate_google_ads_report(customer_id, google_ads_client, date_range=None, 
         f_insight_hour = executor.submit(gemini_hourly_summary, hour_raw_df)
         f_insight_geo = executor.submit(gemini_geo_summary, geo_df)
         f_wasted = executor.submit(gemini_wasted_spend_summary, df_campaign)
-        f_lp_audit = executor.submit(run_landing_page_audits, lp_df, 5)
+        f_lp_audit = executor.submit(run_landing_page_audits, lp_df, 2)
 
         try:
             from .gemini_competitor import generate_competitor_insights

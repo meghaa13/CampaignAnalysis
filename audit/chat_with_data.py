@@ -26,46 +26,94 @@ import pandas as pd
 from datetime import datetime, timedelta
 from .config import model
 
-# ── Data store: Flask session (survives multi-worker Cloud Run) ──────────────
-# Falls back to in-process dict if session not available (e.g. CLI use).
-_DATA_CACHE = {}   # fallback in-process cache
+# ── Data store: filesystem cache (cross-worker safe) + in-process fast layer ──
+# On Render / Cloud Run all workers share the same /tmp, so writing DataFrames
+# to disk means Worker B can read data that Worker A generated.
+_DATA_CACHE = {}   # in-process fast layer (same worker only)
+_DISK_CACHE_DIR = os.environ.get("CHAT_CACHE_DIR", "/tmp/chat_cache")
+os.makedirs(_DISK_CACHE_DIR, exist_ok=True)
+
+
+def _disk_path(key: str) -> str:
+    return os.path.join(_DISK_CACHE_DIR, f"{key}.json")
+
+
+def _write_disk_cache(key: str, df: pd.DataFrame):
+    """Persist a DataFrame to disk so other Gunicorn workers can read it."""
+    try:
+        # For large daily DataFrames keep up to 2000 rows (enough for 30-day data)
+        df.head(2000).to_json(_disk_path(key), orient="records", date_format="iso")
+    except Exception as e:
+        print(f"[CHAT] Disk cache write failed for {key}: {e}")
+
+
+def _read_disk_cache(key: str) -> pd.DataFrame | None:
+    """Read a DataFrame from disk (any worker can call this)."""
+    path = _disk_path(key)
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_json(path, orient="records")
+        if df.empty:
+            return None
+        return df
+    except Exception as e:
+        print(f"[CHAT] Disk cache read failed for {key}: {e}")
+        return None
+
 
 def _session_key(name): return f"__chat_{name}"
 
+
 def load_data_into_chat(campaigns_df=None, keywords_df=None, geo_df=None,
                          search_terms_df=None, hourly_df=None, lp_df=None):
-    """Store serialised DataFrames so any worker can access them."""
+    """Store DataFrames in memory AND on disk so every Gunicorn worker can see them."""
     mapping = {
         "campaigns_df": campaigns_df, "keywords_df": keywords_df,
         "geo_df": geo_df, "search_terms_df": search_terms_df,
         "hourly_df": hourly_df, "lp_df": lp_df,
     }
     for key, df in mapping.items():
-        if df is not None:
+        if df is not None and not df.empty:
+            # 1) Fast in-process layer
+            _DATA_CACHE[key] = df
+            # 2) Disk layer (cross-worker)
+            _write_disk_cache(key, df)
+            # 3) Flask session (small subset, for browser-session stickiness)
             try:
-                # Try Flask session first — store up to 500 rows for daily data
                 from flask import session as _fs
-                _fs[_session_key(key)] = df.head(500).to_json(orient="records")
+                _fs[_session_key(key)] = df.head(200).to_json(orient="records")
             except Exception:
                 pass
-            # Always keep in-process fallback (full data)
-            _DATA_CACHE[key] = df
-    loaded = [k for k, v in mapping.items() if v is not None]
+    loaded = [k for k, v in mapping.items() if v is not None and not v.empty]
     print(f"[CHAT] Data loaded into chat: {loaded}")
+    print(f"[CHAT] Disk cache written to: {_DISK_CACHE_DIR}")
 
 
-def _get_df(key):
-    """Get DataFrame from session (multi-worker safe) or in-process cache."""
-    # Try in-process first (has full data with Date column)
+def _get_df(key) -> pd.DataFrame | None:
+    """
+    Get DataFrame — tries in-process cache first (fast), then disk (cross-worker),
+    then Flask session (smallest subset).
+    """
+    # 1) In-process (fastest — same worker that ran the report)
     cached = _DATA_CACHE.get(key)
-    if cached is not None:
+    if cached is not None and not cached.empty:
         return cached
-    # Fallback to session
+
+    # 2) Disk cache (cross-worker — other Gunicorn workers read here)
+    disk_df = _read_disk_cache(key)
+    if disk_df is not None:
+        _DATA_CACHE[key] = disk_df   # promote to in-process for next call
+        return disk_df
+
+    # 3) Flask session (last resort)
     try:
         from flask import session as _fs
         raw = _fs.get(_session_key(key))
         if raw:
-            return pd.read_json(raw, orient="records")
+            df = pd.read_json(raw, orient="records")
+            if not df.empty:
+                return df
     except Exception:
         pass
     return None
